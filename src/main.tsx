@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { bitable, FieldType, type IFieldMeta } from "@lark-base-open/js-sdk";
+import { bitable, FieldType, type IFieldMeta, type ITableMeta } from "@lark-base-open/js-sdk";
 import { addDays, endOfMonth, endOfWeek, format, isAfter, isBefore, isValid, parseISO, startOfMonth, startOfWeek } from "date-fns";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import "./style.css";
@@ -52,6 +52,9 @@ function groupLabel(d: Date, p: Period) {
 
 function App() {
   const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(true);
+  const [tables, setTables] = useState<ITableMeta[]>([]);
+  const [tableId, setTableId] = useState("");
   const [tableName, setTableName] = useState("当前数据表");
   const [fields, setFields] = useState<IFieldMeta[]>([]);
   const [dateField, setDateField] = useState("");
@@ -64,23 +67,62 @@ function App() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const connect = useCallback(async () => {
-    try {
-      const table = await bitable.base.getActiveTable();
-      const [name, metas] = await Promise.all([table.getName(), table.getFieldMetaList()]);
-      setConnected(true); setTableName(name); setFields(metas);
-      const d = metas.find(f => /日期|时间|date/i.test(f.name)) ?? metas.find(f => [FieldType.DateTime, FieldType.CreatedTime].includes(f.type));
-      const h = metas.find(f => /ACC.*点火|点火.*时长|实际.*时长/i.test(f.name)) ?? metas.find(f => /时长|duration/i.test(f.name));
-      if (d) setDateField(d.id); if (h) setDurationField(h.id);
-    } catch { setConnected(false); }
+  const loadSourceTable = useCallback(async (id: string, tableMetas: ITableMeta[]) => {
+    const table = await bitable.base.getTableById(id);
+    const metas = await table.getFieldMetaList();
+    setTableId(id);
+    setTableName(tableMetas.find(item => item.id === id)?.name ?? await table.getName());
+    setFields(metas);
+    setRows([]);
+    const d = metas.find(f => /日期|时间|date/i.test(f.name)) ?? metas.find(f => [FieldType.DateTime, FieldType.CreatedTime].includes(f.type));
+    const h = metas.find(f => /ACC.*点火|点火.*时长|实际.*时长/i.test(f.name)) ?? metas.find(f => /时长|duration/i.test(f.name));
+    setDateField(d?.id ?? "");
+    setDurationField(h?.id ?? "");
   }, []);
+
+  const connect = useCallback(async () => {
+    setConnecting(true);
+    try {
+      const tableMetas = await bitable.base.getTableMetaList();
+      if (!tableMetas.length) throw new Error("当前多维表格没有数据表");
+      let selectedId = tableMetas[0].id;
+      try {
+        const selection = await bitable.base.getSelection();
+        if (selection.tableId && tableMetas.some(item => item.id === selection.tableId)) selectedId = selection.tableId;
+      } catch {
+        // 仪表盘页面没有当前数据表，使用第一张数据表作为默认值。
+      }
+      setTables(tableMetas);
+      await loadSourceTable(selectedId, tableMetas);
+      setConnected(true);
+      setMessage("");
+    } catch (error) {
+      console.error("连接飞书多维表格失败", error);
+      setConnected(false);
+    } finally {
+      setConnecting(false);
+    }
+  }, [loadSourceTable]);
   useEffect(() => { connect(); }, [connect]);
+
+  async function changeSourceTable(id: string) {
+    setBusy(true); setMessage("");
+    try {
+      await loadSourceTable(id, tables);
+      setMessage("已切换数据源表，请确认字段后读取数据");
+    } catch (error) {
+      console.error("切换数据源表失败", error);
+      setMessage("切换数据源表失败，请重试");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function readTable() {
     if (!dateField || !durationField) return setMessage("请先选择日期字段和 ACC 点火时长字段");
     setBusy(true); setMessage("");
     try {
-      const table = await bitable.base.getActiveTable();
+      const table = await bitable.base.getTableById(tableId);
       let pageToken: number | undefined;
       const list: Datum[] = [];
       do {
@@ -144,9 +186,10 @@ function App() {
   }
 
   return <main>
-    <header><div className="logo">▥</div><div><b>车辆使用率统计</b><small>工作日 × 24 小时口径</small></div><span className={`status ${connected ? "ok" : "warn"}`}>{connected ? `已连接 · ${tableName}` : "请在飞书多维表格中打开"}</span></header>
+    <header><div className="logo">▥</div><div><b>车辆使用率统计</b><small>工作日 × 24 小时口径</small></div><button className={`status ${connected ? "ok" : "warn"}`} onClick={connected || connecting ? undefined : connect}>{connected ? `已连接 · ${tableName}` : connecting ? "正在连接飞书…" : "连接失败 · 点此重试"}</button></header>
     <div className="layout">
       <aside className="panel"><h2>字段设置</h2>
+        <label>数据源表<select value={tableId} disabled={!connected || busy} onChange={e => changeSourceTable(e.target.value)}><option value="">选择数据表</option>{tables.map(table => <option key={table.id} value={table.id}>{table.name}</option>)}</select></label>
         <label>日期字段<select value={dateField} onChange={e => setDateField(e.target.value)}><option value="">选择日期/开始时间</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
         <label>实际使用时长字段<select value={durationField} onChange={e => setDurationField(e.target.value)}><option value="">选择 ACC 点火时长</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
         <label>时长单位<select value={unit} onChange={e => setUnit(e.target.value as Unit)}><option value="hour">小时</option><option value="minute">分钟</option><option value="second">秒</option></select></label>
