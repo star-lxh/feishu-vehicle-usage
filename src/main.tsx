@@ -1,14 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { bitable, FieldType, type IFieldMeta, type ITableMeta } from "@lark-base-open/js-sdk";
-import { addDays, endOfMonth, endOfWeek, format, isAfter, isBefore, isValid, parseISO, startOfMonth, startOfWeek } from "date-fns";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { addDays, endOfDay, endOfMonth, endOfWeek, format, isAfter, isBefore, isValid, parseISO, startOfMonth, startOfWeek } from "date-fns";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import "./style.css";
 
 type Period = "week" | "month";
 type Unit = "hour" | "minute" | "second";
-type Datum = { date: Date; hours: number };
-type Trend = { key: string; label: string; hours: number; workdays: number; rate: number };
+type Datum = { date: Date; hours: number; vehicle: string };
+type FormulaVars = { ACC_SUM: number; ACC_AVG: number; RECORDS: number; WORKDAYS: number; AVAILABLE_HOURS: number };
+type VehicleStat = { vehicle: string; hours: number; records: number; workdays: number; rate: number };
+type TrendValue = { hours: number; records: number; rate: number };
+type Trend = { key: string; label: string; workdays: number; values: Record<string, TrendValue>; [seriesKey: string]: string | number | Record<string, TrendValue> };
+
+const DEFAULT_FORMULA = "ACC_SUM / AVAILABLE_HOURS";
+const COLORS = ["#3370ff", "#00a870", "#f5a623", "#7b61ff", "#e24a68", "#00a6a6", "#8b6f47", "#596780"];
 
 const now = new Date();
 const inputDate = (d: Date) => format(d, "yyyy-MM-dd");
@@ -28,6 +34,16 @@ function numeric(value: unknown): number {
   }
   return 0;
 }
+function textValue(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  if (Array.isArray(value)) return value.map(textValue).filter(Boolean).join("、");
+  if (typeof value === "object") {
+    const v = value as Record<string, unknown>;
+    return textValue(v.text ?? v.name ?? v.value ?? v.id ?? "");
+  }
+  return "";
+}
 function dateValue(value: unknown): Date | null {
   const raw = Array.isArray(value) ? value[0] : value;
   if (typeof raw === "number") {
@@ -45,6 +61,28 @@ function dateValue(value: unknown): Date | null {
   return null;
 }
 const asHours = (v: number, u: Unit) => u === "minute" ? v / 60 : u === "second" ? v / 3600 : v;
+function formulaVars(rows: Datum[], workdays: number): FormulaVars {
+  const sum = rows.reduce((total, row) => total + row.hours, 0);
+  return {
+    ACC_SUM: sum,
+    ACC_AVG: rows.length ? sum / rows.length : 0,
+    RECORDS: rows.length,
+    WORKDAYS: workdays,
+    AVAILABLE_HOURS: workdays * 24,
+  };
+}
+function evaluateFormula(expression: string, vars: FormulaVars): number {
+  const source = expression.trim().toUpperCase();
+  if (!source) throw new Error("公式不能为空");
+  if (!/^[0-9A-Z_+\-*/().\s]+$/.test(source)) throw new Error("仅支持变量、数字、括号和 + - * /");
+  const names = Object.keys(vars) as Array<keyof FormulaVars>;
+  const words = source.match(/[A-Z_]+/g) ?? [];
+  const unknown = words.find(word => !names.includes(word as keyof FormulaVars));
+  if (unknown) throw new Error(`未知变量：${unknown}`);
+  const calculate = Function(...names, `"use strict"; return (${source});`) as (...args: number[]) => number;
+  const result = calculate(...names.map(name => vars[name]));
+  return Number.isFinite(result) ? result : 0;
+}
 const groupKey = (d: Date, p: Period) => p === "week" ? format(startOfWeek(d, { weekStartsOn: 1 }), "yyyy-MM-dd") : format(d, "yyyy-MM");
 function groupLabel(d: Date, p: Period) {
   return p === "month" ? format(d, "M月") : `${format(startOfWeek(d, { weekStartsOn: 1 }), "M.d")}–${format(endOfWeek(d, { weekStartsOn: 1 }), "M.d")}`;
@@ -57,9 +95,11 @@ function App() {
   const [tableId, setTableId] = useState("");
   const [tableName, setTableName] = useState("当前数据表");
   const [fields, setFields] = useState<IFieldMeta[]>([]);
+  const [vehicleField, setVehicleField] = useState("");
   const [dateField, setDateField] = useState("");
   const [durationField, setDurationField] = useState("");
   const [unit, setUnit] = useState<Unit>("hour");
+  const [formula, setFormula] = useState(DEFAULT_FORMULA);
   const [from, setFrom] = useState(inputDate(startOfMonth(now)));
   const [to, setTo] = useState(inputDate(now));
   const [period, setPeriod] = useState<Period>("week");
@@ -76,6 +116,8 @@ function App() {
     setRows([]);
     const d = metas.find(f => /日期|时间|date/i.test(f.name)) ?? metas.find(f => [FieldType.DateTime, FieldType.CreatedTime].includes(f.type));
     const h = metas.find(f => /ACC.*点火|点火.*时长|实际.*时长/i.test(f.name)) ?? metas.find(f => /时长|duration/i.test(f.name));
+    const v = metas.find(f => /车辆名称|车辆名|车牌号|车牌|车辆|vehicle/i.test(f.name));
+    setVehicleField(v?.id ?? "");
     setDateField(d?.id ?? "");
     setDurationField(h?.id ?? "");
   }, []);
@@ -129,7 +171,10 @@ function App() {
         const page = await table.getRecordsByPage({ pageSize: 200, pageToken });
         for (const record of page.records) {
           const date = dateValue(record.fields[dateField]);
-          if (date && isWorkday(date)) list.push({ date, hours: asHours(numeric(record.fields[durationField]), unit) });
+          if (date && isWorkday(date)) {
+            const vehicle = vehicleField ? textValue(record.fields[vehicleField]) || "未填写车辆" : "全部车辆";
+            list.push({ date, hours: asHours(numeric(record.fields[durationField]), unit), vehicle });
+          }
         }
         pageToken = page.hasMore ? page.pageToken : undefined;
       } while (pageToken !== undefined);
@@ -139,28 +184,56 @@ function App() {
   }
 
   const selected = useMemo(() => {
-    const a = parseISO(from), b = parseISO(to);
+    const a = parseISO(from), b = endOfDay(parseISO(to));
     return rows.filter(r => !isBefore(r.date, a) && !isAfter(r.date, b));
   }, [rows, from, to]);
-  const total = useMemo(() => selected.reduce((s, r) => s + r.hours, 0), [selected]);
   const days = useMemo(() => countWorkdays(parseISO(from), parseISO(to)), [from, to]);
-  const rate = days ? total / (days * 24) : 0;
+  const vehicles = useMemo<string[]>(() => Array.from(new Set<string>(selected.map(row => row.vehicle))).sort((a, b) => a.localeCompare(b, "zh-CN")), [selected]);
+  const formulaError = useMemo(() => {
+    try {
+      evaluateFormula(formula, { ACC_SUM: 12, ACC_AVG: 3, RECORDS: 4, WORKDAYS: 5, AVAILABLE_HOURS: 120 });
+      return "";
+    } catch (error) {
+      return error instanceof Error ? error.message : "公式格式错误";
+    }
+  }, [formula]);
+  const vehicleStats = useMemo<VehicleStat[]>(() => vehicles.map(vehicle => {
+    const list = selected.filter(row => row.vehicle === vehicle);
+    const vars = formulaVars(list, days);
+    return {
+      vehicle,
+      hours: vars.ACC_SUM,
+      records: vars.RECORDS,
+      workdays: days,
+      rate: formulaError ? 0 : evaluateFormula(formula, vars),
+    };
+  }), [vehicles, selected, days, formula, formulaError]);
+  const total = useMemo(() => selected.reduce((sum, row) => sum + row.hours, 0), [selected]);
+  const rate = vehicleStats.length ? vehicleStats.reduce((sum, item) => sum + item.rate, 0) / vehicleStats.length : 0;
+  const vehicleSeries = useMemo(() => vehicles.map((vehicle, index) => ({ vehicle, key: `vehicle_${index}`, color: COLORS[index % COLORS.length] })), [vehicles]);
   const trend = useMemo<Trend[]>(() => {
-    const map = new Map<string, Datum[]>();
-    for (const row of selected) { const key = groupKey(row.date, period); map.set(key, [...(map.get(key) ?? []), row]); }
+    const keys = new Set<string>(selected.map(row => groupKey(row.date, period)));
     const a = parseISO(from), b = parseISO(to);
     for (let d = a; !isAfter(d, b); d = period === "week" ? addDays(startOfWeek(d, { weekStartsOn: 1 }), 7) : addDays(endOfMonth(d), 1)) {
-      const key = groupKey(d, period); if (!map.has(key)) map.set(key, []);
+      keys.add(groupKey(d, period));
     }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, rs]) => {
+    return [...keys].sort().map(key => {
       const anchor = period === "week" ? parseISO(key) : parseISO(`${key}-01`);
       const ps = period === "week" ? startOfWeek(anchor, { weekStartsOn: 1 }) : startOfMonth(anchor);
       const pe = period === "week" ? endOfWeek(anchor, { weekStartsOn: 1 }) : endOfMonth(anchor);
       const x = isBefore(ps, a) ? a : ps, y = isAfter(pe, b) ? b : pe;
-      const workdays = countWorkdays(x, y), hours = rs.reduce((s, r) => s + r.hours, 0);
-      return { key, label: groupLabel(anchor, period), hours, workdays, rate: workdays ? hours / (workdays * 24) : 0 };
+      const workdays = countWorkdays(x, y);
+      const point: Trend = { key, label: groupLabel(anchor, period), workdays, values: {} };
+      for (const series of vehicleSeries) {
+        const list = selected.filter(row => row.vehicle === series.vehicle && groupKey(row.date, period) === key);
+        const vars = formulaVars(list, workdays);
+        const item = { hours: vars.ACC_SUM, records: vars.RECORDS, rate: formulaError ? 0 : evaluateFormula(formula, vars) };
+        point[series.key] = item.rate;
+        point.values[series.vehicle] = item;
+      }
+      return point;
     });
-  }, [selected, from, to, period]);
+  }, [selected, from, to, period, vehicleSeries, formula, formulaError]);
 
   function quick(p: Period) {
     setFrom(inputDate(p === "week" ? startOfWeek(now, { weekStartsOn: 1 }) : startOfMonth(now)));
@@ -170,17 +243,25 @@ function App() {
     if (!rows.length) return setMessage("请先读取当前表格");
     setBusy(true); setMessage("");
     try {
-      const { tableId } = await bitable.base.addTable({ name: `使用率统计_${format(new Date(), "MMdd_HHmm")}` });
+      const periodName = period === "week" ? "统计周" : "统计月";
+      const { tableId } = await bitable.base.addTable({ name: `使用率统计_${format(new Date(), "MMdd_HHmm")}`, fields: [{ type: FieldType.Text, name: periodName }] });
       const table = await bitable.base.getTable(tableId);
       const existing = await table.getFieldMetaList();
       const primary = existing.find(f => f.isPrimary) ?? existing[0];
-      await table.setField(primary.id, { name: period === "week" ? "统计周" : "统计月" });
+      await table.setField(primary.id, { name: periodName });
+      const v = await table.addField({ type: FieldType.Text, name: "车辆名称" });
       const h = await table.addField({ type: FieldType.Number, name: "实际使用时长(h)" });
+      const c = await table.addField({ type: FieldType.Number, name: "记录数" });
       const d = await table.addField({ type: FieldType.Number, name: "工作日数" });
       const a = await table.addField({ type: FieldType.Number, name: "可用时长(h)" });
       const r = await table.addField({ type: FieldType.Number, name: "车辆使用率" });
-      await table.addRecords(trend.map(v => ({ fields: { [primary.id]: v.label, [h]: +v.hours.toFixed(2), [d]: v.workdays, [a]: v.workdays * 24, [r]: +v.rate.toFixed(4) } })));
-      setMessage("统计结果已回写到新的数据表");
+      const f = await table.addField({ type: FieldType.Text, name: "计算公式" });
+      const records = trend.flatMap(point => vehicleSeries.map(series => {
+        const value = point.values[series.vehicle] ?? { hours: 0, records: 0, rate: 0 };
+        return { fields: { [primary.id]: point.label, [v]: series.vehicle, [h]: +value.hours.toFixed(2), [c]: value.records, [d]: point.workdays, [a]: point.workdays * 24, [r]: +value.rate.toFixed(6), [f]: formula } };
+      }));
+      await table.addRecords(records);
+      setMessage(`已按“周期 × 车辆”回写 ${records.length} 条统计结果`);
     } catch { setMessage("回写失败，请确认你拥有编辑权限"); }
     finally { setBusy(false); }
   }
@@ -190,20 +271,27 @@ function App() {
     <div className="layout">
       <aside className="panel"><h2>字段设置</h2>
         <label>数据源表<select value={tableId} disabled={!connected || busy} onChange={e => changeSourceTable(e.target.value)}><option value="">选择数据表</option>{tables.map(table => <option key={table.id} value={table.id}>{table.name}</option>)}</select></label>
+        <label>车辆名称字段<select value={vehicleField} onChange={e => setVehicleField(e.target.value)}><option value="">不分车辆（整体统计）</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
         <label>日期字段<select value={dateField} onChange={e => setDateField(e.target.value)}><option value="">选择日期/开始时间</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
         <label>实际使用时长字段<select value={durationField} onChange={e => setDurationField(e.target.value)}><option value="">选择 ACC 点火时长</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
         <label>时长单位<select value={unit} onChange={e => setUnit(e.target.value as Unit)}><option value="hour">小时</option><option value="minute">分钟</option><option value="second">秒</option></select></label>
-        <button className="primary" disabled={!connected || busy} onClick={readTable}>{busy ? "处理中…" : "读取当前表格"}</button>
-        <div className="note"><b>统计口径</b><br/>仅汇总周一至周五的 ACC 点火时长。一天内的多段记录会自动相加。</div>
+        <label>使用率公式<input className="formula-input" value={formula} onChange={e => setFormula(e.target.value.toUpperCase())}/></label>
+        <div className="formula-help"><b>可用变量</b><code>ACC_SUM</code><code>ACC_AVG</code><code>RECORDS</code><code>WORKDAYS</code><code>AVAILABLE_HOURS</code><small>公式结果使用小数表示：0.3 = 30%</small></div>
+        {formulaError && <div className="formula-error">公式错误：{formulaError}</div>}
+        <button className="primary" disabled={!connected || busy || !!formulaError} onClick={readTable}>{busy ? "处理中…" : "读取当前表格"}</button>
+        <div className="note"><b>默认统计口径</b><br/>每辆车的工作日 ACC 点火时长合计 ÷（工作日数 × 24 小时）。一天内的多段记录会自动相加。</div>
       </aside>
       <section>
         <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看本周、本月</p></div><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
         {message && <div className="message">{message}</div>}
-        <div className="metrics"><Metric title="车辆使用率" value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长" value={`${total.toFixed(2)} h`}/></div>
-        <div className="panel chart"><div className="charthead"><div><h2>使用率趋势</h2><p>各周期按对应工作日数 × 24 小时计算</p></div><div className="toggle"><button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>按周</button><button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>按月</button></div></div>
-          <ResponsiveContainer width="100%" height={280}><AreaChart data={trend}><defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#3370ff" stopOpacity=".28"/><stop offset="1" stopColor="#3370ff" stopOpacity=".02"/></linearGradient></defs><CartesianGrid vertical={false} stroke="#e8edf5"/><XAxis dataKey="label" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false} tickFormatter={v => `${Math.round(v * 100)}%`}/><Tooltip formatter={v => [`${(Number(v) * 100).toFixed(1)}%`, "车辆使用率"]}/><Area type="monotone" dataKey="rate" stroke="#3370ff" strokeWidth={2.5} fill="url(#fill)"/></AreaChart></ResponsiveContainer>
+        <div className="metrics"><Metric title={vehicleStats.length > 1 ? "平均车辆使用率" : "车辆使用率"} value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长合计" value={`${total.toFixed(2)} h`}/></div>
+        <div className="panel chart"><div className="charthead"><div><h2>分车辆使用率</h2><p>每辆车分别代入当前公式计算</p></div><span className="formula-badge">{formula}</span></div>
+          <ResponsiveContainer width="100%" height={Math.max(260, vehicleStats.length * 28)}><BarChart data={vehicleStats} margin={{ left: 4, right: 12 }}><CartesianGrid vertical={false} stroke="#e8edf5"/><XAxis dataKey="vehicle" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(1, max * 1.1)]} tickFormatter={v => `${Math.round(v * 100)}%`}/><Tooltip formatter={v => [`${(Number(v) * 100).toFixed(2)}%`, "车辆使用率"]}/><Bar dataKey="rate" fill="#3370ff" radius={[6, 6, 0, 0]}/></BarChart></ResponsiveContainer>
         </div>
-        <div className="panel write"><div><h2>回写统计结果</h2><p>新建周/月统计数据表，不修改原始数据</p></div><button disabled={!rows.length || busy} onClick={writeBack}>回写到飞书</button></div>
+        <div className="panel chart"><div className="charthead"><div><h2>使用率趋势</h2><p>各周期按对应工作日数 × 24 小时计算</p></div><div className="toggle"><button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>按周</button><button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>按月</button></div></div>
+          <ResponsiveContainer width="100%" height={300}><AreaChart data={trend}><CartesianGrid vertical={false} stroke="#e8edf5"/><XAxis dataKey="label" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(1, max * 1.1)]} tickFormatter={v => `${Math.round(v * 100)}%`}/><Tooltip formatter={(v, name) => [`${(Number(v) * 100).toFixed(2)}%`, String(name)]}/><Legend/>{vehicleSeries.map(series => <Area key={series.key} type="monotone" dataKey={series.key} name={series.vehicle} stroke={series.color} strokeWidth={2.2} fill={series.color} fillOpacity={0.08}/>)}</AreaChart></ResponsiveContainer>
+        </div>
+        <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div>
       </section>
     </div>
   </main>;
