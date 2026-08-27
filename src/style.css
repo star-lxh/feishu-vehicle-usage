@@ -57,8 +57,8 @@ header small { display: block; margin-top: 3px; color: #7b8496; }
   margin: auto;
   padding: 20px;
   display: grid;
-  grid-template-columns: 304px minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: 1fr;
+  gap: 14px;
 }
 
 .layout.settings-collapsed { grid-template-columns: 1fr; gap: 14px; }
@@ -74,7 +74,7 @@ header small { display: block; margin-top: 3px; color: #7b8496; }
 .panel h2 { margin: 0 0 18px; font-size: 15px; letter-spacing: -.1px; }
 .panel p { margin: 5px 0 0; color: #7c8799; font-size: 12px; line-height: 1.55; }
 
-aside { height: max-content; position: sticky; top: 20px; }
+aside { height: max-content; position: static; }
 
 .settings-panel.collapsed {
   padding: 8px 10px;
