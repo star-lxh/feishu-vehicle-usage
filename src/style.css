@@ -78,14 +78,16 @@ aside { height: max-content; position: static; }
 
 .settings-panel.collapsed {
   padding: 8px 10px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
   align-items: center;
   gap: 10px;
   position: static;
 }
 
-.settings-panel.collapsed .settings-toggle { width: auto; flex: 1; }
-.settings-panel.collapsed .settings-read { width: 180px; flex: none; margin: 0; }
+.settings-panel.collapsed .settings-toggle { width: 100%; }
+.settings-panel.collapsed .settings-read { width: 100%; margin: 0; }
+.settings-panel.collapsed .note { grid-column: 1 / -1; margin-top: 0; }
 
 .settings-toggle {
   width: 100%;
@@ -391,8 +393,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .status { max-width: 38%; padding: 6px 9px; }
   .layout { padding: 10px; gap: 10px; }
   .panel { padding: 16px; border-radius: 15px; }
-  .settings-panel.collapsed { padding: 8px; align-items: stretch; flex-direction: column; }
+  .settings-panel.collapsed { padding: 8px; grid-template-columns: 1fr; align-items: stretch; }
   .settings-panel.collapsed .settings-read { width: 100%; }
+  .settings-panel.collapsed .note { grid-column: 1; }
   .metrics { gap: 9px; }
   .metric { padding: 16px; border-radius: 14px; }
   .metric strong { font-size: 23px; }
