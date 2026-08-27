@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { bitable, FieldType, type IFieldMeta, type ITableMeta } from "@lark-base-open/js-sdk";
 import { addDays, endOfDay, endOfMonth, endOfWeek, format, isAfter, isBefore, isValid, parseISO, startOfMonth, startOfWeek } from "date-fns";
-import { Bar, BarChart, CartesianGrid, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, LabelList, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import "./style.css";
 
-type Period = "week" | "month";
+type Period = "day" | "week" | "month";
 type Unit = "hour" | "minute" | "second";
 type Datum = { date: Date; hours: number; vehicle: string };
 type FormulaVars = { ACC_SUM: number; ACC_AVG: number; RECORDS: number; WORKDAYS: number; AVAILABLE_HOURS: number };
@@ -14,6 +14,7 @@ type TrendValue = { hours: number; records: number; rate: number };
 type Trend = { key: string; label: string; workdays: number; values: Record<string, TrendValue>; [seriesKey: string]: string | number | Record<string, TrendValue> };
 
 const DEFAULT_FORMULA = "ACC_SUM / AVAILABLE_HOURS";
+const COLORS = ["#3370ff", "#00a870", "#f5a623", "#7b61ff", "#e24a68", "#00a6a6", "#8b6f47", "#596780"];
 
 const now = new Date();
 const inputDate = (d: Date) => format(d, "yyyy-MM-dd");
@@ -82,8 +83,9 @@ function evaluateFormula(expression: string, vars: FormulaVars): number {
   const result = calculate(...names.map(name => vars[name]));
   return Number.isFinite(result) ? result : 0;
 }
-const groupKey = (d: Date, p: Period) => p === "week" ? format(startOfWeek(d, { weekStartsOn: 1 }), "yyyy-MM-dd") : format(d, "yyyy-MM");
+const groupKey = (d: Date, p: Period) => p === "day" ? format(d, "yyyy-MM-dd") : p === "week" ? format(startOfWeek(d, { weekStartsOn: 1 }), "yyyy-MM-dd") : format(d, "yyyy-MM");
 function groupLabel(d: Date, p: Period) {
+  if (p === "day") return format(d, "M.d");
   return p === "month" ? format(d, "M月") : `${format(startOfWeek(d, { weekStartsOn: 1 }), "M.d")}–${format(endOfWeek(d, { weekStartsOn: 1 }), "M.d")}`;
 }
 
@@ -105,8 +107,8 @@ function App() {
   const [rows, setRows] = useState<Datum[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const chartScrollRef = useRef<HTMLDivElement>(null);
-  const chartDrag = useRef({ active: false, startX: 0, scrollLeft: 0 });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [hiddenVehicles, setHiddenVehicles] = useState<Set<string>>(() => new Set());
 
   const loadSourceTable = useCallback(async (id: string, tableMetas: ITableMeta[]) => {
     const table = await bitable.base.getTableById(id);
@@ -115,7 +117,8 @@ function App() {
     setTableName(tableMetas.find(item => item.id === id)?.name ?? await table.getName());
     setFields(metas);
     setRows([]);
-    const d = metas.find(f => /日期|时间|date/i.test(f.name)) ?? metas.find(f => [FieldType.DateTime, FieldType.CreatedTime].includes(f.type));
+    setHiddenVehicles(new Set());
+    const d = metas.find(f => f.name.trim() === "日期") ?? metas.find(f => /日期|时间|date/i.test(f.name)) ?? metas.find(f => [FieldType.DateTime, FieldType.CreatedTime].includes(f.type));
     const h = metas.find(f => /ACC.*点火|点火.*时长|实际.*时长/i.test(f.name)) ?? metas.find(f => /时长|duration/i.test(f.name));
     const v = metas.find(f => /车辆名称|车辆名|车牌号|车牌|车辆|vehicle/i.test(f.name));
     setVehicleField(v?.id ?? "");
@@ -212,22 +215,22 @@ function App() {
   const rankedVehicleStats = useMemo(() => [...vehicleStats].sort((a, b) => b.rate - a.rate), [vehicleStats]);
   const vehicleAxisWidth = useMemo(() => {
     const longest = rankedVehicleStats.reduce((length, item) => Math.max(length, Array.from(item.vehicle).length), 0);
-    return Math.max(96, longest * 14 + 24);
+    return Math.min(156, Math.max(76, longest * 13 + 12));
   }, [rankedVehicleStats]);
-  const rankingChartWidth = Math.max(560, vehicleAxisWidth + 430);
   const total = useMemo(() => selected.reduce((sum, row) => sum + row.hours, 0), [selected]);
   const rate = vehicleStats.length ? vehicleStats.reduce((sum, item) => sum + item.rate, 0) / vehicleStats.length : 0;
-  const vehicleSeries = useMemo(() => vehicles.map((vehicle, index) => ({ vehicle, key: `vehicle_${index}` })), [vehicles]);
+  const vehicleSeries = useMemo(() => vehicles.map((vehicle, index) => ({ vehicle, key: `vehicle_${index}`, color: COLORS[index % COLORS.length] })), [vehicles]);
+  const visibleVehicleSeries = useMemo(() => vehicleSeries.filter(series => !hiddenVehicles.has(series.vehicle)), [vehicleSeries, hiddenVehicles]);
   const trend = useMemo<Trend[]>(() => {
     const keys = new Set<string>(selected.map(row => groupKey(row.date, period)));
     const a = parseISO(from), b = parseISO(to);
-    for (let d = a; !isAfter(d, b); d = period === "week" ? addDays(startOfWeek(d, { weekStartsOn: 1 }), 7) : addDays(endOfMonth(d), 1)) {
-      keys.add(groupKey(d, period));
+    for (let d = a; !isAfter(d, b); d = period === "day" ? addDays(d, 1) : period === "week" ? addDays(startOfWeek(d, { weekStartsOn: 1 }), 7) : addDays(endOfMonth(d), 1)) {
+      if (period !== "day" || isWorkday(d)) keys.add(groupKey(d, period));
     }
     return [...keys].sort().map(key => {
-      const anchor = period === "week" ? parseISO(key) : parseISO(`${key}-01`);
-      const ps = period === "week" ? startOfWeek(anchor, { weekStartsOn: 1 }) : startOfMonth(anchor);
-      const pe = period === "week" ? endOfWeek(anchor, { weekStartsOn: 1 }) : endOfMonth(anchor);
+      const anchor = period === "month" ? parseISO(`${key}-01`) : parseISO(key);
+      const ps = period === "day" ? anchor : period === "week" ? startOfWeek(anchor, { weekStartsOn: 1 }) : startOfMonth(anchor);
+      const pe = period === "day" ? anchor : period === "week" ? endOfWeek(anchor, { weekStartsOn: 1 }) : endOfMonth(anchor);
       const x = isBefore(ps, a) ? a : ps, y = isAfter(pe, b) ? b : pe;
       const workdays = countWorkdays(x, y);
       const point: Trend = { key, label: groupLabel(anchor, period), workdays, values: {} };
@@ -242,36 +245,22 @@ function App() {
     });
   }, [selected, from, to, period, vehicleSeries, formula, formulaError]);
 
-  function quick(p: Period) {
+  function quick(p: "week" | "month") {
     setFrom(inputDate(p === "week" ? startOfWeek(now, { weekStartsOn: 1 }) : startOfMonth(now)));
     setTo(inputDate(now)); setPeriod(p);
   }
-  function startRankingDrag(event: React.PointerEvent<HTMLDivElement>) {
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    const node = chartScrollRef.current;
-    if (!node || node.scrollWidth <= node.clientWidth) return;
-    chartDrag.current = { active: true, startX: event.clientX, scrollLeft: node.scrollLeft };
-    node.classList.add("dragging");
-    node.setPointerCapture(event.pointerId);
-  }
-  function moveRankingDrag(event: React.PointerEvent<HTMLDivElement>) {
-    if (!chartDrag.current.active) return;
-    const node = chartScrollRef.current;
-    if (!node) return;
-    node.scrollLeft = chartDrag.current.scrollLeft - (event.clientX - chartDrag.current.startX);
-    event.preventDefault();
-  }
-  function stopRankingDrag(event: React.PointerEvent<HTMLDivElement>) {
-    const node = chartScrollRef.current;
-    chartDrag.current.active = false;
-    node?.classList.remove("dragging");
-    if (node?.hasPointerCapture(event.pointerId)) node.releasePointerCapture(event.pointerId);
+  function toggleVehicle(vehicle: string) {
+    setHiddenVehicles(current => {
+      const next = new Set(current);
+      if (next.has(vehicle)) next.delete(vehicle); else next.add(vehicle);
+      return next;
+    });
   }
   async function writeBack() {
     if (!rows.length) return setMessage("请先读取当前表格");
     setBusy(true); setMessage("");
     try {
-      const periodName = period === "week" ? "统计周" : "统计月";
+      const periodName = period === "day" ? "统计日" : period === "week" ? "统计周" : "统计月";
       const { tableId } = await bitable.base.addTable({ name: `使用率统计_${format(new Date(), "MMdd_HHmm")}`, fields: [{ type: FieldType.Text, name: periodName }] });
       const table = await bitable.base.getTable(tableId);
       const existing = await table.getFieldMetaList();
@@ -296,44 +285,43 @@ function App() {
 
   return <main>
     <header><div className="logo">▥</div><div><b>车辆使用率统计</b><small>工作日 × 24 小时口径</small></div><button className={`status ${connected ? "ok" : "warn"}`} onClick={connected || connecting ? undefined : connect}>{connected ? `已连接 · ${tableName}` : connecting ? "正在连接飞书…" : "连接失败 · 点此重试"}</button></header>
-    <div className="layout">
-      <aside className="panel"><h2>字段设置</h2>
-        <label>数据源表<select value={tableId} disabled={!connected || busy} onChange={e => changeSourceTable(e.target.value)}><option value="">选择数据表</option>{tables.map(table => <option key={table.id} value={table.id}>{table.name}</option>)}</select></label>
-        <label>车辆名称字段<select value={vehicleField} onChange={e => setVehicleField(e.target.value)}><option value="">不分车辆（整体统计）</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
-        <label>日期字段<select value={dateField} onChange={e => setDateField(e.target.value)}><option value="">选择日期/开始时间</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
-        <label>实际使用时长字段<select value={durationField} onChange={e => setDurationField(e.target.value)}><option value="">选择 ACC 点火时长</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
-        <label>时长单位<select value={unit} onChange={e => setUnit(e.target.value as Unit)}><option value="hour">小时</option><option value="minute">分钟</option><option value="second">秒</option></select></label>
-        <label>使用率公式<input className="formula-input" value={formula} onChange={e => setFormula(e.target.value.toUpperCase())}/></label>
-        <div className="formula-help"><b>可用变量</b><code>ACC_SUM</code><code>ACC_AVG</code><code>RECORDS</code><code>WORKDAYS</code><code>AVAILABLE_HOURS</code><small>公式结果使用小数表示：0.3 = 30%</small></div>
-        {formulaError && <div className="formula-error">公式错误：{formulaError}</div>}
-        <button className="primary" disabled={!connected || busy || !!formulaError} onClick={readTable}>{busy ? "处理中…" : "读取当前表格"}</button>
-        <div className="note"><b>默认统计口径</b><br/>每辆车的工作日 ACC 点火时长合计 ÷（工作日数 × 24 小时）。一天内的多段记录会自动相加。</div>
+    <div className={`layout ${settingsOpen ? "" : "settings-collapsed"}`}>
+      <aside className={`panel settings-panel ${settingsOpen ? "open" : "collapsed"}`}>
+        <button type="button" className="settings-toggle" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span><b>字段设置</b><small>{settingsOpen ? "完成后可点击收起" : "已自动匹配，点击展开修改"}</small></span><i>{settingsOpen ? "⌃" : "⌄"}</i></button>
+        {settingsOpen && <div className="settings-body">
+          <label>数据源表<select value={tableId} disabled={!connected || busy} onChange={e => changeSourceTable(e.target.value)}><option value="">选择数据表</option>{tables.map(table => <option key={table.id} value={table.id}>{table.name}</option>)}</select></label>
+          <label>车辆名称字段<select value={vehicleField} onChange={e => setVehicleField(e.target.value)}><option value="">不分车辆（整体统计）</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
+          <label>日期字段<select value={dateField} onChange={e => setDateField(e.target.value)}><option value="">选择日期/开始时间</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
+          <label>实际使用时长字段<select value={durationField} onChange={e => setDurationField(e.target.value)}><option value="">选择 ACC 点火时长</option>{fields.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
+          <label>时长单位<select value={unit} onChange={e => setUnit(e.target.value as Unit)}><option value="hour">小时</option><option value="minute">分钟</option><option value="second">秒</option></select></label>
+          <label>使用率公式<input className="formula-input" value={formula} onChange={e => setFormula(e.target.value.toUpperCase())}/></label>
+          <div className="formula-help"><b>可用变量</b><code>ACC_SUM</code><code>ACC_AVG</code><code>RECORDS</code><code>WORKDAYS</code><code>AVAILABLE_HOURS</code><small>公式结果使用小数表示：0.3 = 30%</small></div>
+          {formulaError && <div className="formula-error">公式错误：{formulaError}</div>}
+          <button className="primary" disabled={!connected || busy || !!formulaError} onClick={readTable}>{busy ? "处理中…" : "读取当前表格"}</button>
+          <div className="note"><b>默认统计口径</b><br/>每辆车的工作日 ACC 点火时长合计 ÷（工作日数 × 24 小时）。一天内的多段记录会自动相加。</div>
+        </div>}
       </aside>
       <section>
         <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看本周、本月</p></div><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
         {message && <div className="message">{message}</div>}
         <div className="metrics"><Metric title={vehicleStats.length > 1 ? "平均车辆使用率" : "车辆使用率"} value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长合计" value={`${total.toFixed(2)} h`}/></div>
         <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式计算，并从高到低排列</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
-          {rankedVehicleStats.length ? <>
-            <div className="drag-hint"><span>↔</span>横向拖动可查看完整车辆名称</div>
-            <div ref={chartScrollRef} className="chart-scroll" aria-label="可横向拖动的车辆使用率排行" onPointerDown={startRankingDrag} onPointerMove={moveRankingDrag} onPointerUp={stopRankingDrag} onPointerCancel={stopRankingDrag}>
-              <div className="chart-canvas" style={{ width: rankingChartWidth }}>
-                <ResponsiveContainer width="100%" height={Math.max(250, rankedVehicleStats.length * 46 + 42)}>
-                  <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 4, bottom: 2 }}>
-                    <CartesianGrid horizontal={false} stroke="#edf1f7"/>
-                    <XAxis type="number" axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.18)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/>
-                    <YAxis type="category" dataKey="vehicle" width={vehicleAxisWidth} axisLine={false} tickLine={false} interval={0} tick={{ fill: "#354057", fontSize: 12 }}/>
-                    <Tooltip cursor={{ fill: "#f5f7fb" }} formatter={v => [`${(Number(v) * 100).toFixed(2)}%`, "车辆使用率"]}/>
-                    <Bar dataKey="rate" fill="#4c72ff" radius={[0, 8, 8, 0]} barSize={20}>
-                      <LabelList dataKey="rate" position="right" formatter={(v: number) => `${(Number(v) * 100).toFixed(1)}%`} fill="#3152ad" fontSize={11} fontWeight={700}/>
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </> : <ChartEmpty text="读取表格后，这里会按车辆显示使用率排行"/>}
+          {rankedVehicleStats.length ? <ResponsiveContainer width="100%" height={Math.max(250, rankedVehicleStats.length * 46 + 42)}>
+            <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 4, bottom: 2 }}>
+              <CartesianGrid horizontal={false} stroke="#edf1f7"/>
+              <XAxis type="number" axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.18)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/>
+              <YAxis type="category" dataKey="vehicle" width={vehicleAxisWidth} axisLine={false} tickLine={false} interval={0} tick={{ fill: "#354057", fontSize: 12 }}/>
+              <Tooltip cursor={{ fill: "#f5f7fb" }} formatter={v => [`${(Number(v) * 100).toFixed(2)}%`, "车辆使用率"]}/>
+              <Bar dataKey="rate" fill="#4c72ff" radius={[0, 8, 8, 0]} barSize={20}>
+                <LabelList dataKey="rate" position="right" formatter={(v: number) => `${(Number(v) * 100).toFixed(1)}%`} fill="#3152ad" fontSize={11} fontWeight={700}/>
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer> : <ChartEmpty text="读取表格后，这里会按车辆显示使用率排行"/>}
         </div>
-        <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><div className="write-actions"><div className="write-period"><small>回写粒度</small><div className="toggle"><button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>按周</button><button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>按月</button></div></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div></div>
+        <div className="panel chart"><div className="charthead"><div><h2>车辆使用率趋势</h2><p>各周期按对应工作日数 × 24 小时计算</p></div><div className="toggle"><button className={period === "day" ? "active" : ""} onClick={() => setPeriod("day")}>按日</button><button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>按周</button><button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>按月</button></div></div>
+          {vehicleSeries.length ? <><div className="vehicle-filter-head"><b>车辆筛选</b><small>点击车辆名称可隐藏或恢复</small>{hiddenVehicles.size > 0 && <button onClick={() => setHiddenVehicles(new Set())}>全部显示</button>}</div><div className="vehicle-filter">{vehicleSeries.map(series => { const hidden = hiddenVehicles.has(series.vehicle); return <button key={series.key} className={hidden ? "hidden" : ""} aria-pressed={!hidden} onClick={() => toggleVehicle(series.vehicle)}><span style={{ background: hidden ? "#b9c1cf" : series.color }}/>{series.vehicle}</button>; })}</div>{visibleVehicleSeries.length ? <ResponsiveContainer width="100%" height={310}><LineChart data={trend} margin={{ top: 18, right: 14, left: -8, bottom: 2 }}><CartesianGrid vertical={false} stroke="#edf1f7"/><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "#7b8699", fontSize: 11 }} dy={8}/><YAxis axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.16)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/><Tooltip formatter={(v, name) => [`${(Number(v) * 100).toFixed(2)}%`, String(name)]}/>{visibleVehicleSeries.map(series => <Line key={series.key} type="monotone" dataKey={series.key} name={series.vehicle} stroke={series.color} strokeWidth={2.4} dot={{ r: 3, strokeWidth: 2, fill: "#fff" }} activeDot={{ r: 5 }} connectNulls/>)}</LineChart></ResponsiveContainer> : <ChartEmpty text="所有车辆已隐藏，点击上方车辆名称即可恢复"/>}</> : <ChartEmpty text="读取表格后，这里会显示每辆车的日/周/月趋势"/>}
+        </div>
+        <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div>
       </section>
     </div>
   </main>;
