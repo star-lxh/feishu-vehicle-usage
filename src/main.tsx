@@ -103,7 +103,7 @@ function App() {
   const [formula, setFormula] = useState(DEFAULT_FORMULA);
   const [from, setFrom] = useState(inputDate(startOfMonth(now)));
   const [to, setTo] = useState(inputDate(now));
-  const [period, setPeriod] = useState<Period>("week");
+  const [period, setPeriod] = useState<Period>("day");
   const [rows, setRows] = useState<Datum[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -245,7 +245,14 @@ function App() {
     });
   }, [selected, from, to, period, vehicleSeries, formula, formulaError]);
 
-  function quick(p: "week" | "month") {
+  function quick(p: "lastWeek" | "week" | "month") {
+    if (p === "lastWeek") {
+      const anchor = addDays(now, -7);
+      setFrom(inputDate(startOfWeek(anchor, { weekStartsOn: 1 })));
+      setTo(inputDate(endOfWeek(anchor, { weekStartsOn: 1 })));
+      setPeriod("week");
+      return;
+    }
     setFrom(inputDate(p === "week" ? startOfWeek(now, { weekStartsOn: 1 }) : startOfMonth(now)));
     setTo(inputDate(now)); setPeriod(p);
   }
@@ -302,7 +309,7 @@ function App() {
         {settingsOpen && <div className="note"><b>默认统计口径</b><br/>每辆车的工作日 ACC 点火时长合计 ÷（工作日数 × 24 小时）。一天内的多段记录会自动相加。</div>}
       </aside>
       <section>
-        <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看本周、本月</p></div><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
+        <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看上周、本周、本月</p></div><button onClick={() => quick("lastWeek")}>上周</button><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
         {message && <div className="message">{message}</div>}
         <div className="metrics"><Metric title={vehicleStats.length > 1 ? "平均车辆使用率" : "车辆使用率"} value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长合计" value={`${total.toFixed(2)} h`}/></div>
         <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式计算，并从高到低排列</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
