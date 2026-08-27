@@ -17,6 +17,7 @@ const DEFAULT_FORMULA = "ACC_SUM / AVAILABLE_HOURS";
 const COLORS = ["#3370ff", "#00a870", "#f5a623", "#7b61ff", "#e24a68", "#00a6a6", "#8b6f47", "#596780"];
 
 const now = new Date();
+const previousWeekAnchor = addDays(now, -7);
 const inputDate = (d: Date) => format(d, "yyyy-MM-dd");
 const isWorkday = (d: Date) => d.getDay() >= 1 && d.getDay() <= 5;
 function countWorkdays(from: Date, to: Date) {
@@ -101,8 +102,8 @@ function App() {
   const [durationField, setDurationField] = useState("");
   const [unit, setUnit] = useState<Unit>("hour");
   const [formula, setFormula] = useState(DEFAULT_FORMULA);
-  const [from, setFrom] = useState(inputDate(startOfMonth(now)));
-  const [to, setTo] = useState(inputDate(now));
+  const [from, setFrom] = useState(inputDate(startOfWeek(previousWeekAnchor, { weekStartsOn: 1 })));
+  const [to, setTo] = useState(inputDate(endOfWeek(previousWeekAnchor, { weekStartsOn: 1 })));
   const [period, setPeriod] = useState<Period>("day");
   const [rows, setRows] = useState<Datum[]>([]);
   const [message, setMessage] = useState("");
@@ -217,7 +218,7 @@ function App() {
   const rankedVehicleStats = useMemo(() => [...vehicleStats].sort((a, b) => b.rate - a.rate), [vehicleStats]);
   const vehicleAxisWidth = useMemo(() => {
     const longest = rankedVehicleStats.reduce((length, item) => Math.max(length, Array.from(item.vehicle).length), 0);
-    return Math.min(156, Math.max(76, longest * 13 + 12));
+    return Math.min(240, Math.max(96, longest * 14 + 24));
   }, [rankedVehicleStats]);
   const total = useMemo(() => selected.reduce((sum, row) => sum + row.hours, 0), [selected]);
   const rate = vehicleStats.length ? vehicleStats.reduce((sum, item) => sum + item.rate, 0) / vehicleStats.length : 0;
@@ -307,7 +308,7 @@ function App() {
           {formulaError && <div className="formula-error">公式错误：{formulaError}</div>}
         </div>}
         <button className="primary settings-read" disabled={!connected || busy || !!formulaError} onClick={readTable}>{busy ? "处理中…" : "读取当前表格"}</button>
-        {settingsOpen && <div className="note"><b>默认统计口径</b><br/>每辆车的工作日 ACC 点火时长合计 ÷（工作日数 × 24 小时）。一天内的多段记录会自动相加。</div>}
+        <div className="note"><b>默认统计口径</b><br/>每辆车的工作日 ACC 点火时长合计 ÷（工作日数 × 24 小时）。一天内的多段记录会自动相加。</div>
       </aside>
       <section>
         <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看上周、本周、本月</p></div><button onClick={() => quick("lastWeek")}>上周</button><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
@@ -315,7 +316,7 @@ function App() {
         <div className="metrics"><Metric title={vehicleStats.length > 1 ? "平均车辆使用率" : "车辆使用率"} value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长合计" value={`${total.toFixed(2)} h`}/></div>
         <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式计算，并从高到低排列</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
           {rankedVehicleStats.length ? <ResponsiveContainer width="100%" height={Math.max(250, rankedVehicleStats.length * 46 + 42)}>
-            <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 4, bottom: 2 }}>
+            <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 12, bottom: 2 }}>
               <CartesianGrid horizontal={false} stroke="#edf1f7"/>
               <XAxis type="number" axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.18)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/>
               <YAxis type="category" dataKey="vehicle" width={vehicleAxisWidth} axisLine={false} tickLine={false} interval={0} tick={{ fill: "#354057", fontSize: 12 }}/>
