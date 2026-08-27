@@ -297,9 +297,9 @@ function App() {
           <label>使用率公式<input className="formula-input" value={formula} onChange={e => setFormula(e.target.value.toUpperCase())}/></label>
           <div className="formula-help"><b>可用变量</b><code>ACC_SUM</code><code>ACC_AVG</code><code>RECORDS</code><code>WORKDAYS</code><code>AVAILABLE_HOURS</code><small>公式结果使用小数表示：0.3 = 30%</small></div>
           {formulaError && <div className="formula-error">公式错误：{formulaError}</div>}
-          <button className="primary" disabled={!connected || busy || !!formulaError} onClick={readTable}>{busy ? "处理中…" : "读取当前表格"}</button>
-          <div className="note"><b>默认统计口径</b><br/>每辆车的工作日 ACC 点火时长合计 ÷（工作日数 × 24 小时）。一天内的多段记录会自动相加。</div>
         </div>}
+        <button className="primary settings-read" disabled={!connected || busy || !!formulaError} onClick={readTable}>{busy ? "处理中…" : "读取当前表格"}</button>
+        {settingsOpen && <div className="note"><b>默认统计口径</b><br/>每辆车的工作日 ACC 点火时长合计 ÷（工作日数 × 24 小时）。一天内的多段记录会自动相加。</div>}
       </aside>
       <section>
         <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看本周、本月</p></div><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
