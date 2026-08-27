@@ -7,7 +7,7 @@ import "./style.css";
 
 type Period = "day" | "week" | "month";
 type Unit = "hour" | "minute" | "second";
-type Datum = { date: Date; hours: number; vehicle: string; recordId: string };
+type Datum = { date: Date; hours: number; vehicle: string; recordId: string; cells: Record<string, string> };
 type FormulaVars = { ACC_SUM: number; ACC_AVG: number; RECORDS: number; WORKDAYS: number; AVAILABLE_HOURS: number };
 type VehicleStat = { vehicle: string; hours: number; records: number; workdays: number; rate: number };
 type TrendValue = { hours: number; records: number; rate: number };
@@ -89,6 +89,14 @@ function groupLabel(d: Date, p: Period) {
   if (p === "day") return format(d, "M.d");
   return p === "month" ? format(d, "M月") : `${format(startOfWeek(d, { weekStartsOn: 1 }), "M.d")}–${format(endOfWeek(d, { weekStartsOn: 1 }), "M.d")}`;
 }
+function fieldIcon(type: FieldType) {
+  if ([FieldType.DateTime, FieldType.CreatedTime, FieldType.ModifiedTime].includes(type)) return "▣";
+  if ([FieldType.SingleSelect, FieldType.MultiSelect].includes(type)) return "⌄";
+  if (type === FieldType.Formula) return "ƒx";
+  if ([FieldType.Number, FieldType.Currency, FieldType.Progress, FieldType.Rating].includes(type)) return "123";
+  if ([FieldType.User, FieldType.CreatedUser, FieldType.ModifiedUser].includes(type)) return "♙";
+  return "A≡";
+}
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -111,6 +119,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [hiddenVehicles, setHiddenVehicles] = useState<Set<string>>(() => new Set());
   const [detailVehicle, setDetailVehicle] = useState<string | null>(null);
+  const [detailSearch, setDetailSearch] = useState("");
 
   const loadSourceTable = useCallback(async (id: string, tableMetas: ITableMeta[]) => {
     const table = await bitable.base.getTableById(id);
@@ -121,6 +130,7 @@ function App() {
     setRows([]);
     setHiddenVehicles(new Set());
     setDetailVehicle(null);
+    setDetailSearch("");
     const d = metas.find(f => f.name.trim() === "日期") ?? metas.find(f => /日期|时间|date/i.test(f.name)) ?? metas.find(f => [FieldType.DateTime, FieldType.CreatedTime].includes(f.type));
     const h = metas.find(f => /ACC.*点火|点火.*时长|实际.*时长/i.test(f.name)) ?? metas.find(f => /时长|duration/i.test(f.name));
     const v = metas.find(f => /车辆名称|车辆名|车牌号|车牌|车辆|vehicle/i.test(f.name));
@@ -175,12 +185,21 @@ function App() {
       let pageToken: number | undefined;
       const list: Datum[] = [];
       do {
-        const page = await table.getRecordsByPage({ pageSize: 200, pageToken });
+        const [page, displayPage] = await Promise.all([
+          table.getRecordsByPage({ pageSize: 200, pageToken }),
+          table.getRecordsByPage({ pageSize: 200, pageToken, stringValue: true }),
+        ]);
+        const displayRecords = new Map(displayPage.records.map(record => [record.recordId, record]));
         for (const record of page.records) {
           const date = dateValue(record.fields[dateField]);
           if (date && isWorkday(date)) {
             const vehicle = vehicleField ? textValue(record.fields[vehicleField]) || "未填写车辆" : "全部车辆";
-            list.push({ date, hours: asHours(numeric(record.fields[durationField]), unit), vehicle, recordId: record.recordId });
+            const displayRecord = displayRecords.get(record.recordId);
+            const cells = Object.fromEntries(fields.map(field => [
+              field.id,
+              textValue(displayRecord?.fields[field.id] ?? record.fields[field.id]),
+            ]));
+            list.push({ date, hours: asHours(numeric(record.fields[durationField]), unit), vehicle, recordId: record.recordId, cells });
           }
         }
         pageToken = page.hasMore ? page.pageToken : undefined;
@@ -218,10 +237,14 @@ function App() {
     };
   }), [vehicles, selected, days, formula, formulaError]);
   const rankedVehicleStats = useMemo(() => [...vehicleStats].sort((a, b) => b.rate - a.rate), [vehicleStats]);
-  const detailStat = useMemo(() => vehicleStats.find(item => item.vehicle === detailVehicle) ?? null, [vehicleStats, detailVehicle]);
   const detailRows = useMemo(() => selected
     .filter(row => row.vehicle === detailVehicle)
     .sort((a, b) => a.date.getTime() - b.date.getTime()), [selected, detailVehicle]);
+  const filteredDetailRows = useMemo(() => {
+    const keyword = detailSearch.trim().toLocaleLowerCase("zh-CN");
+    if (!keyword) return detailRows;
+    return detailRows.filter(row => fields.some(field => (row.cells[field.id] ?? "").toLocaleLowerCase("zh-CN").includes(keyword)));
+  }, [detailRows, detailSearch, fields]);
   const vehicleAxisWidth = useMemo(() => {
     const longest = rankedVehicleStats.reduce((length, item) => Math.max(length, Array.from(item.vehicle).length), 0);
     return Math.min(240, Math.max(96, longest * 14 + 24));
@@ -274,7 +297,10 @@ function App() {
   function openVehicleDetail(entry: unknown) {
     const item = entry as VehicleStat & { payload?: VehicleStat };
     const vehicle = item.payload?.vehicle ?? item.vehicle;
-    if (vehicle) setDetailVehicle(vehicle);
+    if (vehicle) {
+      setDetailSearch("");
+      setDetailVehicle(vehicle);
+    }
   }
   async function openSourceRecord(recordId: string) {
     try {
@@ -355,28 +381,21 @@ function App() {
         <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div>
       </section>
     </div>
-    {detailVehicle && detailStat && <div className="detail-overlay" role="presentation" onClick={event => { if (event.target === event.currentTarget) setDetailVehicle(null); }}>
-      <aside className="detail-drawer" role="dialog" aria-modal="true" aria-labelledby="vehicle-detail-title">
-        <div className="detail-titlebar"><div><small>车辆使用率排行 · 数据详情</small><h2 id="vehicle-detail-title">{detailVehicle}</h2><p>{from} 至 {to}</p></div><button type="button" aria-label="关闭数据详情" onClick={() => setDetailVehicle(null)}>×</button></div>
-        <div className="detail-summary">
-          <div className="primary-stat"><small>车辆使用率</small><strong>{(detailStat.rate * 100).toFixed(2)}%</strong></div>
-          <div><small>ACC 合计</small><strong>{detailStat.hours.toFixed(2)} h</strong></div>
-          <div><small>数据记录</small><strong>{detailStat.records} 条</strong></div>
-          <div><small>工作日 / 可用时长</small><strong>{detailStat.workdays} 天 / {detailStat.workdays * 24} h</strong></div>
-        </div>
-        <div className="detail-section-head"><div><b>原始使用记录</b><small>一天内的多段记录分别展示</small></div><span>共 {detailRows.length} 条</span></div>
+    {detailVehicle && <div className="detail-overlay" role="presentation">
+      <section className="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="vehicle-detail-title">
+        <div className="detail-titlebar"><div><h2 id="vehicle-detail-title">数据详情</h2><p>{detailVehicle} · {from} 至 {to} · 点击任意行可打开飞书原记录</p></div><button type="button" aria-label="关闭数据详情" onClick={() => setDetailVehicle(null)}>×</button></div>
+        <div className="detail-search"><span>⌕</span><input aria-label="搜索数据详情" placeholder="请输入关键词搜索" value={detailSearch} onChange={event => setDetailSearch(event.target.value)}/><small>{filteredDetailRows.length} / {detailRows.length} 条</small></div>
         <div className="detail-table-wrap">
           <table className="detail-table">
-            <thead><tr><th>#</th><th>日期 / 开始时间</th><th>ACC 点火时长</th><th>原记录</th></tr></thead>
-            <tbody>{detailRows.map((row, index) => <tr key={row.recordId}>
-              <td>{index + 1}</td>
-              <td>{format(row.date, row.date.getHours() || row.date.getMinutes() ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd")}</td>
-              <td><b>{row.hours.toFixed(2)} h</b></td>
-              <td><button type="button" onClick={() => openSourceRecord(row.recordId)}>查看</button></td>
-            </tr>)}</tbody>
+            <thead><tr>{fields.map(field => <th key={field.id}><span>{fieldIcon(field.type)}</span>{field.name}</th>)}</tr></thead>
+            <tbody>{filteredDetailRows.map(row => <tr key={row.recordId} onClick={() => openSourceRecord(row.recordId)}>{fields.map(field => {
+              const value = row.cells[field.id] ?? "";
+              return <td key={field.id} title={value}>{value || <i>—</i>}</td>;
+            })}</tr>)}</tbody>
           </table>
+          {!filteredDetailRows.length && <div className="detail-empty">没有符合条件的数据</div>}
         </div>
-      </aside>
+      </section>
     </div>}
   </main>;
 }
