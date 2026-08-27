@@ -6,5 +6,25 @@
     <meta name="description" content="飞书多维表格车辆使用率统计插件" />
     <title>车辆使用率统计</title>
   </head>
-  <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
+  <body>
+    <div id="root">
+      <div id="boot-status" style="padding:24px;font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#646a73">
+        正在连接飞书多维表格…
+      </div>
+    </div>
+    <script>
+      function showBootError(message) {
+        var target = document.getElementById("boot-status");
+        if (target) target.textContent = "插件启动失败：" + message;
+      }
+      window.addEventListener("error", function (event) {
+        showBootError(event.message || "前端资源加载异常");
+      });
+      window.addEventListener("unhandledrejection", function (event) {
+        var reason = event.reason;
+        showBootError(reason && reason.message ? reason.message : String(reason || "初始化异常"));
+      });
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
