@@ -1,19 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { bitable, FieldType, type IFieldMeta, type ITableMeta } from "@lark-base-open/js-sdk";
+import { bitable, FieldType, FilterConjunction, FilterOperator, ViewType, type FilterInfoCondition, type IFieldMeta, type IGridView, type ITableMeta } from "@lark-base-open/js-sdk";
 import { addDays, endOfDay, endOfMonth, endOfWeek, format, isAfter, isBefore, isValid, parseISO, startOfMonth, startOfWeek } from "date-fns";
 import { Bar, BarChart, CartesianGrid, LabelList, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import "./style.css";
 
 type Period = "day" | "week" | "month";
 type Unit = "hour" | "minute" | "second";
-type Datum = { date: Date; hours: number; vehicle: string; recordId: string; cells: Record<string, string> };
+type Datum = { date: Date; hours: number; vehicle: string; recordId: string };
 type FormulaVars = { ACC_SUM: number; ACC_AVG: number; RECORDS: number; WORKDAYS: number; AVAILABLE_HOURS: number };
 type VehicleStat = { vehicle: string; hours: number; records: number; workdays: number; rate: number };
 type TrendValue = { hours: number; records: number; rate: number };
 type Trend = { key: string; label: string; workdays: number; values: Record<string, TrendValue>; [seriesKey: string]: string | number | Record<string, TrendValue> };
 
 const DEFAULT_FORMULA = "ACC_SUM / AVAILABLE_HOURS";
+const DETAIL_VIEW_NAME = "车辆使用率｜数据明细";
 const COLORS = ["#3370ff", "#00a870", "#f5a623", "#7b61ff", "#e24a68", "#00a6a6", "#8b6f47", "#596780"];
 
 const now = new Date();
@@ -89,15 +90,6 @@ function groupLabel(d: Date, p: Period) {
   if (p === "day") return format(d, "M.d");
   return p === "month" ? format(d, "M月") : `${format(startOfWeek(d, { weekStartsOn: 1 }), "M.d")}–${format(endOfWeek(d, { weekStartsOn: 1 }), "M.d")}`;
 }
-function fieldIcon(type: FieldType) {
-  if ([FieldType.DateTime, FieldType.CreatedTime, FieldType.ModifiedTime].includes(type)) return "▣";
-  if ([FieldType.SingleSelect, FieldType.MultiSelect].includes(type)) return "⌄";
-  if (type === FieldType.Formula) return "ƒx";
-  if ([FieldType.Number, FieldType.Currency, FieldType.Progress, FieldType.Rating].includes(type)) return "123";
-  if ([FieldType.User, FieldType.CreatedUser, FieldType.ModifiedUser].includes(type)) return "♙";
-  return "A≡";
-}
-
 function App() {
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
@@ -118,8 +110,6 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [hiddenVehicles, setHiddenVehicles] = useState<Set<string>>(() => new Set());
-  const [detailVehicle, setDetailVehicle] = useState<string | null>(null);
-  const [detailSearch, setDetailSearch] = useState("");
 
   const loadSourceTable = useCallback(async (id: string, tableMetas: ITableMeta[]) => {
     const table = await bitable.base.getTableById(id);
@@ -129,8 +119,6 @@ function App() {
     setFields(metas);
     setRows([]);
     setHiddenVehicles(new Set());
-    setDetailVehicle(null);
-    setDetailSearch("");
     const d = metas.find(f => f.name.trim() === "日期") ?? metas.find(f => /日期|时间|date/i.test(f.name)) ?? metas.find(f => [FieldType.DateTime, FieldType.CreatedTime].includes(f.type));
     const h = metas.find(f => /ACC.*点火|点火.*时长|实际.*时长/i.test(f.name)) ?? metas.find(f => /时长|duration/i.test(f.name));
     const v = metas.find(f => /车辆名称|车辆名|车牌号|车牌|车辆|vehicle/i.test(f.name));
@@ -185,21 +173,12 @@ function App() {
       let pageToken: number | undefined;
       const list: Datum[] = [];
       do {
-        const [page, displayPage] = await Promise.all([
-          table.getRecordsByPage({ pageSize: 200, pageToken }),
-          table.getRecordsByPage({ pageSize: 200, pageToken, stringValue: true }),
-        ]);
-        const displayRecords = new Map(displayPage.records.map(record => [record.recordId, record]));
+        const page = await table.getRecordsByPage({ pageSize: 200, pageToken });
         for (const record of page.records) {
           const date = dateValue(record.fields[dateField]);
           if (date && isWorkday(date)) {
             const vehicle = vehicleField ? textValue(record.fields[vehicleField]) || "未填写车辆" : "全部车辆";
-            const displayRecord = displayRecords.get(record.recordId);
-            const cells = Object.fromEntries(fields.map(field => [
-              field.id,
-              textValue(displayRecord?.fields[field.id] ?? record.fields[field.id]),
-            ]));
-            list.push({ date, hours: asHours(numeric(record.fields[durationField]), unit), vehicle, recordId: record.recordId, cells });
+            list.push({ date, hours: asHours(numeric(record.fields[durationField]), unit), vehicle, recordId: record.recordId });
           }
         }
         pageToken = page.hasMore ? page.pageToken : undefined;
@@ -237,14 +216,6 @@ function App() {
     };
   }), [vehicles, selected, days, formula, formulaError]);
   const rankedVehicleStats = useMemo(() => [...vehicleStats].sort((a, b) => b.rate - a.rate), [vehicleStats]);
-  const detailRows = useMemo(() => selected
-    .filter(row => row.vehicle === detailVehicle)
-    .sort((a, b) => a.date.getTime() - b.date.getTime()), [selected, detailVehicle]);
-  const filteredDetailRows = useMemo(() => {
-    const keyword = detailSearch.trim().toLocaleLowerCase("zh-CN");
-    if (!keyword) return detailRows;
-    return detailRows.filter(row => fields.some(field => (row.cells[field.id] ?? "").toLocaleLowerCase("zh-CN").includes(keyword)));
-  }, [detailRows, detailSearch, fields]);
   const vehicleAxisWidth = useMemo(() => {
     const longest = rankedVehicleStats.reduce((length, item) => Math.max(length, Array.from(item.vehicle).length), 0);
     return Math.min(240, Math.max(96, longest * 14 + 24));
@@ -294,23 +265,66 @@ function App() {
       return next;
     });
   }
-  function openVehicleDetail(entry: unknown) {
+  async function openVehicleDetail(entry: unknown) {
     const item = entry as VehicleStat & { payload?: VehicleStat };
     const vehicle = item.payload?.vehicle ?? item.vehicle;
-    if (vehicle) {
-      setDetailSearch("");
-      setDetailVehicle(vehicle);
-    }
-  }
-  async function openSourceRecord(recordId: string) {
+    if (!vehicle || !tableId || !dateField) return;
+    setBusy(true);
+    setMessage(`正在打开 ${vehicle} 的原表记录…`);
     try {
-      await bitable.ui.showRecordDetailDialog({
-        tableId,
-        recordId,
-        fieldIdList: [vehicleField, dateField, durationField].filter(Boolean),
-      });
-    } catch {
-      setMessage("暂时无法打开原始记录，请确认当前账号拥有数据表阅读权限");
+      const table = await bitable.base.getTableById(tableId);
+      const viewMetas = await table.getViewMetaList();
+      let detailViewId = viewMetas.find(view => view.name === DETAIL_VIEW_NAME && view.type === ViewType.Grid)?.id;
+      if (!detailViewId) detailViewId = (await table.addView({ name: DETAIL_VIEW_NAME, type: ViewType.Grid })).viewId;
+
+      const view = await table.getViewById(detailViewId) as IGridView;
+      const currentFilter = await view.getFilterInfo();
+      for (const condition of currentFilter?.conditions ?? []) {
+        if (condition.conditionId) await view.deleteFilterCondition(condition.conditionId);
+      }
+      await view.setFilterConjunction(FilterConjunction.And);
+
+      const dateMeta = fields.find(field => field.id === dateField);
+      if (!dateMeta || ![FieldType.DateTime, FieldType.CreatedTime, FieldType.ModifiedTime, FieldType.Formula, FieldType.Lookup].includes(dateMeta.type)) {
+        throw new Error("当前日期字段不支持原表范围筛选，请在字段设置中选择日期类型字段");
+      }
+      const startBoundary = parseISO(from).getTime() - 1;
+      const endBoundary = addDays(parseISO(to), 1).getTime();
+      const conditions: FilterInfoCondition[] = [
+        { fieldId: dateField, fieldType: dateMeta.type, operator: FilterOperator.IsGreater, value: startBoundary } as FilterInfoCondition,
+        { fieldId: dateField, fieldType: dateMeta.type, operator: FilterOperator.IsLess, value: endBoundary } as FilterInfoCondition,
+      ];
+
+      if (vehicleField) {
+        const vehicleMeta = fields.find(field => field.id === vehicleField);
+        if (!vehicleMeta) throw new Error("找不到车辆名称字段");
+        if (vehicle === "未填写车辆") {
+          conditions.push({ fieldId: vehicleField, fieldType: vehicleMeta.type, operator: FilterOperator.IsEmpty, value: null } as FilterInfoCondition);
+        } else if (vehicleMeta.type === FieldType.SingleSelect || vehicleMeta.type === FieldType.MultiSelect) {
+          const options = (vehicleMeta.property as { options?: Array<{ id: string; name: string }> }).options ?? [];
+          const option = options.find(candidate => candidate.name === vehicle);
+          if (!option) throw new Error(`找不到车辆选项：${vehicle}`);
+          conditions.push({
+            fieldId: vehicleField,
+            fieldType: vehicleMeta.type,
+            operator: vehicleMeta.type === FieldType.SingleSelect ? FilterOperator.Is : FilterOperator.Contains,
+            value: option.id,
+          } as FilterInfoCondition);
+        } else if ([FieldType.Text, FieldType.Phone, FieldType.Url, FieldType.Email, FieldType.Barcode, FieldType.Formula, FieldType.Lookup].includes(vehicleMeta.type)) {
+          conditions.push({ fieldId: vehicleField, fieldType: vehicleMeta.type, operator: FilterOperator.Is, value: vehicle } as FilterInfoCondition);
+        } else {
+          throw new Error("当前车辆字段类型暂不支持原表筛选，请使用文本或单选字段");
+        }
+      }
+
+      await view.addFilterCondition(conditions);
+      setMessage(`已在原数据表中打开：${vehicle} · ${from} 至 ${to}`);
+      await bitable.ui.switchToView(tableId, detailViewId);
+    } catch (error) {
+      console.error("打开原表筛选视图失败", error);
+      setMessage(error instanceof Error ? error.message : "暂时无法打开原表记录，请确认你拥有数据表编辑权限");
+    } finally {
+      setBusy(false);
     }
   }
   async function writeBack() {
@@ -362,7 +376,7 @@ function App() {
         <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看上周、本周、本月</p></div><button onClick={() => quick("lastWeek")}>上周</button><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
         {message && <div className="message">{message}</div>}
         <div className="metrics"><Metric title={vehicleStats.length > 1 ? "平均车辆使用率" : "车辆使用率"} value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长合计" value={`${total.toFixed(2)} h`}/></div>
-        <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式从高到低排列，点击任意车辆查看数据详情</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
+        <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式从高到低排列，点击任意车辆直接打开原数据表对应记录</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
           {rankedVehicleStats.length ? <ResponsiveContainer width="100%" height={Math.max(250, rankedVehicleStats.length * 46 + 42)}>
             <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 12, bottom: 2 }}>
               <CartesianGrid horizontal={false} stroke="#edf1f7"/>
@@ -381,22 +395,6 @@ function App() {
         <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div>
       </section>
     </div>
-    {detailVehicle && <div className="detail-overlay" role="presentation">
-      <section className="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="vehicle-detail-title">
-        <div className="detail-titlebar"><div><h2 id="vehicle-detail-title">数据详情</h2><p>{detailVehicle} · {from} 至 {to} · 点击任意行可打开飞书原记录</p></div><button type="button" aria-label="关闭数据详情" onClick={() => setDetailVehicle(null)}>×</button></div>
-        <div className="detail-search"><span>⌕</span><input aria-label="搜索数据详情" placeholder="请输入关键词搜索" value={detailSearch} onChange={event => setDetailSearch(event.target.value)}/><small>{filteredDetailRows.length} / {detailRows.length} 条</small></div>
-        <div className="detail-table-wrap">
-          <table className="detail-table">
-            <thead><tr>{fields.map(field => <th key={field.id}><span>{fieldIcon(field.type)}</span>{field.name}</th>)}</tr></thead>
-            <tbody>{filteredDetailRows.map(row => <tr key={row.recordId} onClick={() => openSourceRecord(row.recordId)}>{fields.map(field => {
-              const value = row.cells[field.id] ?? "";
-              return <td key={field.id} title={value}>{value || <i>—</i>}</td>;
-            })}</tr>)}</tbody>
-          </table>
-          {!filteredDetailRows.length && <div className="detail-empty">没有符合条件的数据</div>}
-        </div>
-      </section>
-    </div>}
   </main>;
 }
 
