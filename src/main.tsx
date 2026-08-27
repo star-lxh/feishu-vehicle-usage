@@ -7,7 +7,7 @@ import "./style.css";
 
 type Period = "day" | "week" | "month";
 type Unit = "hour" | "minute" | "second";
-type Datum = { date: Date; hours: number; vehicle: string };
+type Datum = { date: Date; hours: number; vehicle: string; recordId: string };
 type FormulaVars = { ACC_SUM: number; ACC_AVG: number; RECORDS: number; WORKDAYS: number; AVAILABLE_HOURS: number };
 type VehicleStat = { vehicle: string; hours: number; records: number; workdays: number; rate: number };
 type TrendValue = { hours: number; records: number; rate: number };
@@ -110,6 +110,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [hiddenVehicles, setHiddenVehicles] = useState<Set<string>>(() => new Set());
+  const [detailVehicle, setDetailVehicle] = useState<string | null>(null);
 
   const loadSourceTable = useCallback(async (id: string, tableMetas: ITableMeta[]) => {
     const table = await bitable.base.getTableById(id);
@@ -119,6 +120,7 @@ function App() {
     setFields(metas);
     setRows([]);
     setHiddenVehicles(new Set());
+    setDetailVehicle(null);
     const d = metas.find(f => f.name.trim() === "日期") ?? metas.find(f => /日期|时间|date/i.test(f.name)) ?? metas.find(f => [FieldType.DateTime, FieldType.CreatedTime].includes(f.type));
     const h = metas.find(f => /ACC.*点火|点火.*时长|实际.*时长/i.test(f.name)) ?? metas.find(f => /时长|duration/i.test(f.name));
     const v = metas.find(f => /车辆名称|车辆名|车牌号|车牌|车辆|vehicle/i.test(f.name));
@@ -178,7 +180,7 @@ function App() {
           const date = dateValue(record.fields[dateField]);
           if (date && isWorkday(date)) {
             const vehicle = vehicleField ? textValue(record.fields[vehicleField]) || "未填写车辆" : "全部车辆";
-            list.push({ date, hours: asHours(numeric(record.fields[durationField]), unit), vehicle });
+            list.push({ date, hours: asHours(numeric(record.fields[durationField]), unit), vehicle, recordId: record.recordId });
           }
         }
         pageToken = page.hasMore ? page.pageToken : undefined;
@@ -216,6 +218,10 @@ function App() {
     };
   }), [vehicles, selected, days, formula, formulaError]);
   const rankedVehicleStats = useMemo(() => [...vehicleStats].sort((a, b) => b.rate - a.rate), [vehicleStats]);
+  const detailStat = useMemo(() => vehicleStats.find(item => item.vehicle === detailVehicle) ?? null, [vehicleStats, detailVehicle]);
+  const detailRows = useMemo(() => selected
+    .filter(row => row.vehicle === detailVehicle)
+    .sort((a, b) => a.date.getTime() - b.date.getTime()), [selected, detailVehicle]);
   const vehicleAxisWidth = useMemo(() => {
     const longest = rankedVehicleStats.reduce((length, item) => Math.max(length, Array.from(item.vehicle).length), 0);
     return Math.min(240, Math.max(96, longest * 14 + 24));
@@ -264,6 +270,22 @@ function App() {
       if (next.has(vehicle)) next.delete(vehicle); else next.add(vehicle);
       return next;
     });
+  }
+  function openVehicleDetail(entry: unknown) {
+    const item = entry as VehicleStat & { payload?: VehicleStat };
+    const vehicle = item.payload?.vehicle ?? item.vehicle;
+    if (vehicle) setDetailVehicle(vehicle);
+  }
+  async function openSourceRecord(recordId: string) {
+    try {
+      await bitable.ui.showRecordDetailDialog({
+        tableId,
+        recordId,
+        fieldIdList: [vehicleField, dateField, durationField].filter(Boolean),
+      });
+    } catch {
+      setMessage("暂时无法打开原始记录，请确认当前账号拥有数据表阅读权限");
+    }
   }
   async function writeBack() {
     if (!rows.length) return setMessage("请先读取当前表格");
@@ -314,14 +336,14 @@ function App() {
         <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看上周、本周、本月</p></div><button onClick={() => quick("lastWeek")}>上周</button><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
         {message && <div className="message">{message}</div>}
         <div className="metrics"><Metric title={vehicleStats.length > 1 ? "平均车辆使用率" : "车辆使用率"} value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长合计" value={`${total.toFixed(2)} h`}/></div>
-        <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式计算，并从高到低排列</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
+        <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式从高到低排列，点击任意车辆查看数据详情</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
           {rankedVehicleStats.length ? <ResponsiveContainer width="100%" height={Math.max(250, rankedVehicleStats.length * 46 + 42)}>
             <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 12, bottom: 2 }}>
               <CartesianGrid horizontal={false} stroke="#edf1f7"/>
               <XAxis type="number" axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.18)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/>
               <YAxis type="category" dataKey="vehicle" width={vehicleAxisWidth} axisLine={false} tickLine={false} interval={0} tick={{ fill: "#354057", fontSize: 12 }}/>
               <Tooltip cursor={{ fill: "#f5f7fb" }} formatter={v => [`${(Number(v) * 100).toFixed(2)}%`, "车辆使用率"]}/>
-              <Bar dataKey="rate" fill="#4c72ff" radius={[0, 8, 8, 0]} barSize={20}>
+              <Bar className="rank-bar" dataKey="rate" fill="#4c72ff" radius={[0, 8, 8, 0]} barSize={20} onClick={openVehicleDetail}>
                 <LabelList dataKey="rate" position="right" formatter={(v: number) => `${(Number(v) * 100).toFixed(1)}%`} fill="#3152ad" fontSize={11} fontWeight={700}/>
               </Bar>
             </BarChart>
@@ -333,6 +355,29 @@ function App() {
         <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div>
       </section>
     </div>
+    {detailVehicle && detailStat && <div className="detail-overlay" role="presentation" onClick={event => { if (event.target === event.currentTarget) setDetailVehicle(null); }}>
+      <aside className="detail-drawer" role="dialog" aria-modal="true" aria-labelledby="vehicle-detail-title">
+        <div className="detail-titlebar"><div><small>车辆使用率排行 · 数据详情</small><h2 id="vehicle-detail-title">{detailVehicle}</h2><p>{from} 至 {to}</p></div><button type="button" aria-label="关闭数据详情" onClick={() => setDetailVehicle(null)}>×</button></div>
+        <div className="detail-summary">
+          <div className="primary-stat"><small>车辆使用率</small><strong>{(detailStat.rate * 100).toFixed(2)}%</strong></div>
+          <div><small>ACC 合计</small><strong>{detailStat.hours.toFixed(2)} h</strong></div>
+          <div><small>数据记录</small><strong>{detailStat.records} 条</strong></div>
+          <div><small>工作日 / 可用时长</small><strong>{detailStat.workdays} 天 / {detailStat.workdays * 24} h</strong></div>
+        </div>
+        <div className="detail-section-head"><div><b>原始使用记录</b><small>一天内的多段记录分别展示</small></div><span>共 {detailRows.length} 条</span></div>
+        <div className="detail-table-wrap">
+          <table className="detail-table">
+            <thead><tr><th>#</th><th>日期 / 开始时间</th><th>ACC 点火时长</th><th>原记录</th></tr></thead>
+            <tbody>{detailRows.map((row, index) => <tr key={row.recordId}>
+              <td>{index + 1}</td>
+              <td>{format(row.date, row.date.getHours() || row.date.getMinutes() ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd")}</td>
+              <td><b>{row.hours.toFixed(2)} h</b></td>
+              <td><button type="button" onClick={() => openSourceRecord(row.recordId)}>查看</button></td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </aside>
+    </div>}
   </main>;
 }
 
