@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { bitable, FieldType, type IFieldMeta, type ITableMeta } from "@lark-base-open/js-sdk";
 import { addDays, endOfDay, endOfMonth, endOfWeek, format, isAfter, isBefore, isValid, parseISO, startOfMonth, startOfWeek } from "date-fns";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, LabelList, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import "./style.css";
 
 type Period = "week" | "month";
@@ -208,6 +208,11 @@ function App() {
       rate: formulaError ? 0 : evaluateFormula(formula, vars),
     };
   }), [vehicles, selected, days, formula, formulaError]);
+  const rankedVehicleStats = useMemo(() => [...vehicleStats].sort((a, b) => b.rate - a.rate), [vehicleStats]);
+  const vehicleAxisWidth = useMemo(() => {
+    const longest = rankedVehicleStats.reduce((length, item) => Math.max(length, Array.from(item.vehicle).length), 0);
+    return Math.min(156, Math.max(76, longest * 13 + 12));
+  }, [rankedVehicleStats]);
   const total = useMemo(() => selected.reduce((sum, row) => sum + row.hours, 0), [selected]);
   const rate = vehicleStats.length ? vehicleStats.reduce((sum, item) => sum + item.rate, 0) / vehicleStats.length : 0;
   const vehicleSeries = useMemo(() => vehicles.map((vehicle, index) => ({ vehicle, key: `vehicle_${index}`, color: COLORS[index % COLORS.length] })), [vehicles]);
@@ -285,11 +290,21 @@ function App() {
         <div className="panel range"><div><h2>统计范围</h2><p>自定义日期，或快捷查看本周、本月</p></div><button onClick={() => quick("week")}>本周</button><button onClick={() => quick("month")}>本月</button><label>开始日期<input type="date" value={from} onChange={e => setFrom(e.target.value)}/></label><label>结束日期<input type="date" value={to} max={inputDate(now)} onChange={e => setTo(e.target.value)}/></label></div>
         {message && <div className="message">{message}</div>}
         <div className="metrics"><Metric title={vehicleStats.length > 1 ? "平均车辆使用率" : "车辆使用率"} value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长合计" value={`${total.toFixed(2)} h`}/></div>
-        <div className="panel chart"><div className="charthead"><div><h2>分车辆使用率</h2><p>每辆车分别代入当前公式计算</p></div><span className="formula-badge">{formula}</span></div>
-          <ResponsiveContainer width="100%" height={Math.max(260, vehicleStats.length * 28)}><BarChart data={vehicleStats} margin={{ left: 4, right: 12 }}><CartesianGrid vertical={false} stroke="#e8edf5"/><XAxis dataKey="vehicle" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(1, max * 1.1)]} tickFormatter={v => `${Math.round(v * 100)}%`}/><Tooltip formatter={v => [`${(Number(v) * 100).toFixed(2)}%`, "车辆使用率"]}/><Bar dataKey="rate" fill="#3370ff" radius={[6, 6, 0, 0]}/></BarChart></ResponsiveContainer>
+        <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式计算，并从高到低排列</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
+          {rankedVehicleStats.length ? <ResponsiveContainer width="100%" height={Math.max(250, rankedVehicleStats.length * 46 + 42)}>
+            <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 4, bottom: 2 }}>
+              <CartesianGrid horizontal={false} stroke="#edf1f7"/>
+              <XAxis type="number" axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.18)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/>
+              <YAxis type="category" dataKey="vehicle" width={vehicleAxisWidth} axisLine={false} tickLine={false} interval={0} tick={{ fill: "#354057", fontSize: 12 }}/>
+              <Tooltip cursor={{ fill: "#f5f7fb" }} formatter={v => [`${(Number(v) * 100).toFixed(2)}%`, "车辆使用率"]}/>
+              <Bar dataKey="rate" fill="#4c72ff" radius={[0, 8, 8, 0]} barSize={20}>
+                <LabelList dataKey="rate" position="right" formatter={(v: number) => `${(Number(v) * 100).toFixed(1)}%`} fill="#3152ad" fontSize={11} fontWeight={700}/>
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer> : <ChartEmpty text="读取表格后，这里会按车辆显示使用率排行"/>}
         </div>
-        <div className="panel chart"><div className="charthead"><div><h2>使用率趋势</h2><p>各周期按对应工作日数 × 24 小时计算</p></div><div className="toggle"><button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>按周</button><button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>按月</button></div></div>
-          <ResponsiveContainer width="100%" height={300}><AreaChart data={trend}><CartesianGrid vertical={false} stroke="#e8edf5"/><XAxis dataKey="label" axisLine={false} tickLine={false}/><YAxis axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(1, max * 1.1)]} tickFormatter={v => `${Math.round(v * 100)}%`}/><Tooltip formatter={(v, name) => [`${(Number(v) * 100).toFixed(2)}%`, String(name)]}/><Legend/>{vehicleSeries.map(series => <Area key={series.key} type="monotone" dataKey={series.key} name={series.vehicle} stroke={series.color} strokeWidth={2.2} fill={series.color} fillOpacity={0.08}/>)}</AreaChart></ResponsiveContainer>
+        <div className="panel chart"><div className="charthead"><div><h2>车辆使用率趋势</h2><p>各周期按对应工作日数 × 24 小时计算</p></div><div className="toggle"><button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>按周</button><button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>按月</button></div></div>
+          {vehicleSeries.length ? <ResponsiveContainer width="100%" height={310}><LineChart data={trend} margin={{ top: 18, right: 14, left: -8, bottom: 2 }}><CartesianGrid vertical={false} stroke="#edf1f7"/><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "#7b8699", fontSize: 11 }} dy={8}/><YAxis axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.16)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/><Tooltip formatter={(v, name) => [`${(Number(v) * 100).toFixed(2)}%`, String(name)]}/><Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 11, paddingTop: 12 }}/>{vehicleSeries.map(series => <Line key={series.key} type="monotone" dataKey={series.key} name={series.vehicle} stroke={series.color} strokeWidth={2.4} dot={{ r: 3, strokeWidth: 2, fill: "#fff" }} activeDot={{ r: 5 }} connectNulls/>)}</LineChart></ResponsiveContainer> : <ChartEmpty text="读取表格后，这里会显示每辆车的周/月趋势"/>}
         </div>
         <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div>
       </section>
@@ -299,6 +314,10 @@ function App() {
 
 function Metric({ title, value, blue = false }: { title: string; value: string; blue?: boolean }) {
   return <div className={`metric ${blue ? "blue" : ""}`}><small>{title}</small><strong>{value}</strong></div>;
+}
+
+function ChartEmpty({ text }: { text: string }) {
+  return <div className="chart-empty"><span>↗</span><b>暂无图表数据</b><small>{text}</small></div>;
 }
 
 createRoot(document.getElementById("root")!).render(<App/>);
