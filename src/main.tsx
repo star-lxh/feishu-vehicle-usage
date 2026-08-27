@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { bitable, FieldType, type IFieldMeta, type ITableMeta } from "@lark-base-open/js-sdk";
 import { addDays, endOfDay, endOfMonth, endOfWeek, format, isAfter, isBefore, isValid, parseISO, startOfMonth, startOfWeek } from "date-fns";
-import { Bar, BarChart, CartesianGrid, LabelList, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import "./style.css";
 
 type Period = "week" | "month";
@@ -14,7 +14,6 @@ type TrendValue = { hours: number; records: number; rate: number };
 type Trend = { key: string; label: string; workdays: number; values: Record<string, TrendValue>; [seriesKey: string]: string | number | Record<string, TrendValue> };
 
 const DEFAULT_FORMULA = "ACC_SUM / AVAILABLE_HOURS";
-const COLORS = ["#3370ff", "#00a870", "#f5a623", "#7b61ff", "#e24a68", "#00a6a6", "#8b6f47", "#596780"];
 
 const now = new Date();
 const inputDate = (d: Date) => format(d, "yyyy-MM-dd");
@@ -106,6 +105,8 @@ function App() {
   const [rows, setRows] = useState<Datum[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const chartScrollRef = useRef<HTMLDivElement>(null);
+  const chartDrag = useRef({ active: false, startX: 0, scrollLeft: 0 });
 
   const loadSourceTable = useCallback(async (id: string, tableMetas: ITableMeta[]) => {
     const table = await bitable.base.getTableById(id);
@@ -211,11 +212,12 @@ function App() {
   const rankedVehicleStats = useMemo(() => [...vehicleStats].sort((a, b) => b.rate - a.rate), [vehicleStats]);
   const vehicleAxisWidth = useMemo(() => {
     const longest = rankedVehicleStats.reduce((length, item) => Math.max(length, Array.from(item.vehicle).length), 0);
-    return Math.min(156, Math.max(76, longest * 13 + 12));
+    return Math.max(96, longest * 14 + 24);
   }, [rankedVehicleStats]);
+  const rankingChartWidth = Math.max(560, vehicleAxisWidth + 430);
   const total = useMemo(() => selected.reduce((sum, row) => sum + row.hours, 0), [selected]);
   const rate = vehicleStats.length ? vehicleStats.reduce((sum, item) => sum + item.rate, 0) / vehicleStats.length : 0;
-  const vehicleSeries = useMemo(() => vehicles.map((vehicle, index) => ({ vehicle, key: `vehicle_${index}`, color: COLORS[index % COLORS.length] })), [vehicles]);
+  const vehicleSeries = useMemo(() => vehicles.map((vehicle, index) => ({ vehicle, key: `vehicle_${index}` })), [vehicles]);
   const trend = useMemo<Trend[]>(() => {
     const keys = new Set<string>(selected.map(row => groupKey(row.date, period)));
     const a = parseISO(from), b = parseISO(to);
@@ -243,6 +245,27 @@ function App() {
   function quick(p: Period) {
     setFrom(inputDate(p === "week" ? startOfWeek(now, { weekStartsOn: 1 }) : startOfMonth(now)));
     setTo(inputDate(now)); setPeriod(p);
+  }
+  function startRankingDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const node = chartScrollRef.current;
+    if (!node || node.scrollWidth <= node.clientWidth) return;
+    chartDrag.current = { active: true, startX: event.clientX, scrollLeft: node.scrollLeft };
+    node.classList.add("dragging");
+    node.setPointerCapture(event.pointerId);
+  }
+  function moveRankingDrag(event: React.PointerEvent<HTMLDivElement>) {
+    if (!chartDrag.current.active) return;
+    const node = chartScrollRef.current;
+    if (!node) return;
+    node.scrollLeft = chartDrag.current.scrollLeft - (event.clientX - chartDrag.current.startX);
+    event.preventDefault();
+  }
+  function stopRankingDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const node = chartScrollRef.current;
+    chartDrag.current.active = false;
+    node?.classList.remove("dragging");
+    if (node?.hasPointerCapture(event.pointerId)) node.releasePointerCapture(event.pointerId);
   }
   async function writeBack() {
     if (!rows.length) return setMessage("请先读取当前表格");
@@ -291,22 +314,26 @@ function App() {
         {message && <div className="message">{message}</div>}
         <div className="metrics"><Metric title={vehicleStats.length > 1 ? "平均车辆使用率" : "车辆使用率"} value={`${(rate * 100).toFixed(1)}%`} blue/><Metric title="统计工作日" value={`${days} 天`}/><Metric title="实际使用时长合计" value={`${total.toFixed(2)} h`}/></div>
         <div className="panel chart"><div className="charthead"><div><h2>车辆使用率排行</h2><p>按当前公式计算，并从高到低排列</p></div><div className="formula-summary"><small>当前公式</small><code>{formula}</code></div></div>
-          {rankedVehicleStats.length ? <ResponsiveContainer width="100%" height={Math.max(250, rankedVehicleStats.length * 46 + 42)}>
-            <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 4, bottom: 2 }}>
-              <CartesianGrid horizontal={false} stroke="#edf1f7"/>
-              <XAxis type="number" axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.18)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/>
-              <YAxis type="category" dataKey="vehicle" width={vehicleAxisWidth} axisLine={false} tickLine={false} interval={0} tick={{ fill: "#354057", fontSize: 12 }}/>
-              <Tooltip cursor={{ fill: "#f5f7fb" }} formatter={v => [`${(Number(v) * 100).toFixed(2)}%`, "车辆使用率"]}/>
-              <Bar dataKey="rate" fill="#4c72ff" radius={[0, 8, 8, 0]} barSize={20}>
-                <LabelList dataKey="rate" position="right" formatter={(v: number) => `${(Number(v) * 100).toFixed(1)}%`} fill="#3152ad" fontSize={11} fontWeight={700}/>
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer> : <ChartEmpty text="读取表格后，这里会按车辆显示使用率排行"/>}
+          {rankedVehicleStats.length ? <>
+            <div className="drag-hint"><span>↔</span>横向拖动可查看完整车辆名称</div>
+            <div ref={chartScrollRef} className="chart-scroll" aria-label="可横向拖动的车辆使用率排行" onPointerDown={startRankingDrag} onPointerMove={moveRankingDrag} onPointerUp={stopRankingDrag} onPointerCancel={stopRankingDrag}>
+              <div className="chart-canvas" style={{ width: rankingChartWidth }}>
+                <ResponsiveContainer width="100%" height={Math.max(250, rankedVehicleStats.length * 46 + 42)}>
+                  <BarChart data={rankedVehicleStats} layout="vertical" margin={{ top: 14, right: 66, left: 4, bottom: 2 }}>
+                    <CartesianGrid horizontal={false} stroke="#edf1f7"/>
+                    <XAxis type="number" axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.18)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/>
+                    <YAxis type="category" dataKey="vehicle" width={vehicleAxisWidth} axisLine={false} tickLine={false} interval={0} tick={{ fill: "#354057", fontSize: 12 }}/>
+                    <Tooltip cursor={{ fill: "#f5f7fb" }} formatter={v => [`${(Number(v) * 100).toFixed(2)}%`, "车辆使用率"]}/>
+                    <Bar dataKey="rate" fill="#4c72ff" radius={[0, 8, 8, 0]} barSize={20}>
+                      <LabelList dataKey="rate" position="right" formatter={(v: number) => `${(Number(v) * 100).toFixed(1)}%`} fill="#3152ad" fontSize={11} fontWeight={700}/>
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </> : <ChartEmpty text="读取表格后，这里会按车辆显示使用率排行"/>}
         </div>
-        <div className="panel chart"><div className="charthead"><div><h2>车辆使用率趋势</h2><p>各周期按对应工作日数 × 24 小时计算</p></div><div className="toggle"><button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>按周</button><button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>按月</button></div></div>
-          {vehicleSeries.length ? <ResponsiveContainer width="100%" height={310}><LineChart data={trend} margin={{ top: 18, right: 14, left: -8, bottom: 2 }}><CartesianGrid vertical={false} stroke="#edf1f7"/><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "#7b8699", fontSize: 11 }} dy={8}/><YAxis axisLine={false} tickLine={false} domain={[0, (max: number) => Math.max(0.1, max * 1.16)]} tickFormatter={v => `${Math.round(v * 100)}%`} tick={{ fill: "#8a94a6", fontSize: 11 }}/><Tooltip formatter={(v, name) => [`${(Number(v) * 100).toFixed(2)}%`, String(name)]}/><Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 11, paddingTop: 12 }}/>{vehicleSeries.map(series => <Line key={series.key} type="monotone" dataKey={series.key} name={series.vehicle} stroke={series.color} strokeWidth={2.4} dot={{ r: 3, strokeWidth: 2, fill: "#fff" }} activeDot={{ r: 5 }} connectNulls/>)}</LineChart></ResponsiveContainer> : <ChartEmpty text="读取表格后，这里会显示每辆车的周/月趋势"/>}
-        </div>
-        <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div>
+        <div className="panel write"><div><h2>回写统计结果</h2><p>按“周期 × 车辆”新建统计数据表，不修改原始数据</p></div><div className="write-actions"><div className="write-period"><small>回写粒度</small><div className="toggle"><button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>按周</button><button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>按月</button></div></div><button disabled={!rows.length || busy || !!formulaError} onClick={writeBack}>回写到飞书</button></div></div>
       </section>
     </div>
   </main>;
