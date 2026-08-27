@@ -182,7 +182,9 @@ function App() {
         }
         pageToken = page.hasMore ? page.pageToken : undefined;
       } while (pageToken !== undefined);
-      setRows(list); setMessage(`已读取 ${list.length} 条工作日记录`);
+      setRows(list);
+      setPeriod("day");
+      setMessage(`已读取 ${list.length} 条工作日记录`);
     } catch { setMessage("读取失败，请确认插件拥有当前多维表格的读取权限"); }
     finally { setBusy(false); }
   }
@@ -250,11 +252,10 @@ function App() {
       const anchor = addDays(now, -7);
       setFrom(inputDate(startOfWeek(anchor, { weekStartsOn: 1 })));
       setTo(inputDate(endOfWeek(anchor, { weekStartsOn: 1 })));
-      setPeriod("week");
       return;
     }
     setFrom(inputDate(p === "week" ? startOfWeek(now, { weekStartsOn: 1 }) : startOfMonth(now)));
-    setTo(inputDate(now)); setPeriod(p);
+    setTo(inputDate(now));
   }
   function toggleVehicle(vehicle: string) {
     setHiddenVehicles(current => {
